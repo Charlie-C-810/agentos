@@ -16,6 +16,7 @@ export interface Session {
   threadId: string
   chatId: string
   cliId: CliId
+  cliSessionId?: string
   status: SessionStatus
   createdAt: string
   updatedAt: string
@@ -137,6 +138,32 @@ export class SessionManager {
       if (this.sessions.get(key) === updated) this.sessions.set(key, current)
       throw error
     }
+    return updated
+  }
+
+  async setCliSessionId(
+    sessionId: string,
+    cliSessionId: string,
+  ): Promise<Session> {
+    const current = this.get(sessionId)
+    if (!current) throw new Error(`会话不存在: ${sessionId}`)
+    if (!cliSessionId) throw new Error('CLI 会话 ID 不能为空')
+
+    const updated: Session = {
+      ...current,
+      cliSessionId,
+      updatedAt: this.now().toISOString(),
+    }
+    const key = sessionKey(updated.chatId, updated.threadId)
+    this.sessions.set(key, updated)
+
+    try {
+      await this.persist()
+    } catch (error) {
+      if (this.sessions.get(key) === updated) this.sessions.set(key, current)
+      throw error
+    }
+
     return updated
   }
 

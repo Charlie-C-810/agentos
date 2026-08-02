@@ -2,19 +2,10 @@
  * 飞书接入：WS 长连接收消息 + REST 回消息。
  */
 import * as Lark from '@larksuiteoapi/node-sdk'
-import { parseMentions, type Mention } from './message-parser.js'
-import { extname, join } from 'node:path'
 import { mkdir } from 'node:fs/promises'
-import { CardJson } from './card.js'
-
-const CONTENT_TYPE_EXTENSIONS: Record<string, string> = {
-  'image/jpeg': 'jpg',
-  'image/png': 'png',
-  'image/gif': 'gif',
-  'image/webp': 'webp',
-  'image/bmp': 'bmp',
-  'image/x-icon': 'ico',
-}
+import { extname, join } from 'node:path'
+import { parseMentions, type Mention } from './message-parser.js'
+import type { CardJson } from './card.js'
 
 export interface IncomingMessage {
   messageId: string
@@ -42,6 +33,12 @@ export interface Bot {
     text: string,
     replyInThread?: boolean,
   ) => Promise<string | undefined>
+  replyCard: (
+    messageId: string,
+    card: CardJson,
+    replyInThread?: boolean,
+  ) => Promise<string | undefined>
+  updateCard: (messageId: string, card: CardJson) => Promise<void>
   downloadResource: (
     messageId: string,
     fileKey: string,
@@ -49,12 +46,15 @@ export interface Bot {
     saveDir: string,
     fileName?: string,
   ) => Promise<string>
-  replyCard: (
-    messageId: string,
-    card: CardJson,
-    replyInThread?: boolean,
-  ) => Promise<string | undefined>
-  updateCard: (messageId: string, card: CardJson) => Promise<void>
+}
+
+const CONTENT_TYPE_EXTENSIONS: Record<string, string> = {
+  'image/jpeg': 'jpg',
+  'image/png': 'png',
+  'image/gif': 'gif',
+  'image/webp': 'webp',
+  'image/bmp': 'bmp',
+  'image/x-icon': 'ico',
 }
 
 function getHeader(headers: any, name: string): string {
@@ -77,18 +77,35 @@ function resourceExtension(
   return CONTENT_TYPE_EXTENSIONS[mime] ?? (type === 'image' ? 'img' : 'bin')
 }
 
-function extractText(messageType: string, content: string): string {
+interface PostElement {
+  tag?: string
+  text?: string
+  user_id?: string
+}
+
+function renderPostElement(element: PostElement): string {
+  if (element.tag === 'at') return element.user_id ?? ''
+  if (element.tag === 'br') return '\n'
+  if (['text', 'a', 'code', 'code_block', 'md'].includes(element.tag ?? '')) {
+    return element.text ?? ''
+  }
+  return ''
+}
+
+export function extractMessageText(
+  messageType: string,
+  content: string,
+): string {
   const parsed = JSON.parse(content)
   if (messageType === 'text') {
     return parsed.text ?? ''
   }
   if (messageType === 'post') {
-    const paragraphs: any[][] = parsed.content ?? []
+    const paragraphs: PostElement[][] = parsed.content ?? []
     return paragraphs
-      .flat()
-      .filter((el) => el.tag === 'text')
-      .map((el) => el.text)
-      .join('')
+      .map((paragraph) => paragraph.map(renderPostElement).join(''))
+      .filter(Boolean)
+      .join('\n')
       .trim()
   }
   return ''
@@ -101,6 +118,7 @@ export function startBot(opts: BotOptions): Bot {
 
   const bot: Bot = {
     client,
+
     async reply(messageId, text, replyInThread = false) {
       const res = await client.im.v1.message.reply({
         path: { message_id: messageId },
@@ -112,6 +130,7 @@ export function startBot(opts: BotOptions): Bot {
       })
       return res.data?.message_id
     },
+
     async replyCard(messageId, card, replyInThread = false) {
       const res = await client.im.v1.message.reply({
         path: { message_id: messageId },
@@ -123,12 +142,14 @@ export function startBot(opts: BotOptions): Bot {
       })
       return res.data?.message_id
     },
+
     async updateCard(messageId, card) {
       await client.im.v1.message.patch({
         path: { message_id: messageId },
         data: { content: JSON.stringify(card) },
       })
     },
+
     async downloadResource(messageId, fileKey, type, saveDir, fileName) {
       const res = await client.im.v1.messageResource.get({
         path: { message_id: messageId, file_key: fileKey },
@@ -151,10 +172,10 @@ export function startBot(opts: BotOptions): Bot {
         chatId: m.chat_id,
         chatType: m.chat_type,
         messageType: m.message_type,
-        text: extractText(m.message_type, m.content),
-        senderOpenId: data.sender.sender_id?.open_id ?? '',
+        text: extractMessageText(m.message_type, m.content),
         rootId: m.root_id ?? '',
         threadId: m.thread_id ?? '',
+        senderOpenId: data.sender.sender_id?.open_id ?? '',
         mentions: parseMentions(m.mentions),
         rawContent: m.content,
       }
