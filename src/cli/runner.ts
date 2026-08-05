@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process'
 import { createInterface } from 'node:readline'
-import type { CliAdapter, CliRunResult } from './types.js'
+import type { CliAdapter, CliEvent, CliRunResult } from './types.js'
 
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000
 
@@ -11,6 +11,7 @@ export interface RunCliOptions {
   sessionId?: string
   signal?: AbortSignal
   timeoutMs?: number
+  onEvent?: (event: CliEvent) => void
 }
 
 export function runCli(options: RunCliOptions): Promise<CliRunResult> {
@@ -21,8 +22,8 @@ export function runCli(options: RunCliOptions): Promise<CliRunResult> {
     sessionId,
     signal,
     timeoutMs = DEFAULT_TIMEOUT_MS,
+    onEvent,
   } = options
-
   const args = sessionId
     ? adapter.buildResumeArgs(prompt, sessionId)
     : adapter.buildArgs(prompt)
@@ -55,20 +56,21 @@ export function runCli(options: RunCliOptions): Promise<CliRunResult> {
     }
 
     lines.on('line', (line) => {
-      const event = adapter.parseEvent(line)
-      if (!event) return
-
-      if (event.sessionId) observedSessionId = event.sessionId
-
-      if (event.type === 'error') {
-        resultError = new Error(event.message)
-        return
-      }
-
-      if (event.type === 'result') {
-        finalResult = {
-          answer: event.answer,
-          sessionId: event.sessionId ?? observedSessionId,
+      for (const event of adapter.parseEvents(line)) {
+        onEvent?.(event)
+        if ('sessionId' in event && event.sessionId) {
+          observedSessionId = event.sessionId
+        }
+        if (event.type === 'error') {
+          resultError = new Error(event.message)
+          continue
+        }
+        if (event.type === 'result') {
+          finalResult = {
+            answer: event.answer,
+            sessionId: event.sessionId ?? observedSessionId,
+            ...(event.stats ? { stats: event.stats } : {}),
+          }
         }
       }
     })
@@ -76,18 +78,22 @@ export function runCli(options: RunCliOptions): Promise<CliRunResult> {
     child.stderr.on('data', (chunk: Buffer | string) => {
       stderr += chunk.toString()
     })
-
     child.once('error', (error) => {
-      if (timedOut) return fail(new Error(`${adapter.displayName} 执行超时`))
+      if (timedOut) {
+        fail(new Error(`${adapter.displayName} 执行超时`))
+        return
+      }
       if (signal?.aborted) {
-        return fail(new Error(`${adapter.displayName} 执行已取消`))
+        fail(new Error(`${adapter.displayName} 执行已取消`))
+        return
       }
       fail(error)
     })
-
     child.once('close', (code) => {
       if (settled) return
-      if (timedOut) return fail(new Error(`${adapter.displayName} 执行超时`))
+      if (timedOut) {
+        return fail(new Error(`${adapter.displayName} 执行超时`))
+      }
       if (signal?.aborted) {
         return fail(new Error(`${adapter.displayName} 执行已取消`))
       }
@@ -102,7 +108,6 @@ export function runCli(options: RunCliOptions): Promise<CliRunResult> {
       if (!finalResult) {
         return fail(new Error(`${adapter.displayName} 没有返回最终结果`))
       }
-
       settled = true
       finish()
       resolve(finalResult)

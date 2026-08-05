@@ -24,6 +24,27 @@ export interface BotOptions {
   appId: string
   appSecret: string
   onMessage: (msg: IncomingMessage, bot: Bot) => Promise<void>
+  onCardAction?: (action: CardAction) => Promise<CardActionResponse | undefined>
+}
+
+export interface CardAction {
+  operatorOpenId: string
+  messageId: string
+  value: Record<string, unknown>
+}
+
+export interface CardActionResponse {
+  toast?: { type: 'success' | 'info' | 'warning' | 'error'; content: string }
+  card?: { type: 'raw'; data: CardJson }
+}
+
+export function parseCardAction(data: any): CardAction {
+  const value = data?.action?.value
+  return {
+    operatorOpenId: data?.operator?.open_id ?? data?.operator_id?.open_id ?? '',
+    messageId: data?.context?.open_message_id ?? data?.open_message_id ?? '',
+    value: isRecord(value) ? value : {},
+  }
 }
 
 export interface Bot {
@@ -112,7 +133,7 @@ export function extractMessageText(
 }
 
 export function startBot(opts: BotOptions): Bot {
-  const { appId, appSecret, onMessage } = opts
+  const { appId, appSecret, onMessage, onCardAction } = opts
 
   const client = new Lark.Client({ appId, appSecret })
 
@@ -165,6 +186,10 @@ export function startBot(opts: BotOptions): Bot {
   }
 
   const dispatcher = new Lark.EventDispatcher({}).register({
+    'card.action.trigger': async (data: any) => {
+      if (!onCardAction) return undefined
+      return onCardAction(parseCardAction(data))
+    },
     'im.message.receive_v1': async (data) => {
       const m = data.message
       const msg: IncomingMessage = {
@@ -187,4 +212,8 @@ export function startBot(opts: BotOptions): Bot {
   wsClient.start({ eventDispatcher: dispatcher })
 
   return bot
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
 }
