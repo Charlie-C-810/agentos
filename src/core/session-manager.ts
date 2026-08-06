@@ -1,13 +1,6 @@
 import { randomUUID } from 'node:crypto'
+import type { CliId } from '../cli/types.js'
 import type { SessionStore } from './session-store.js'
-
-export interface SessionManagerOptions {
-  now?: () => Date
-  createId?: () => string
-  store?: SessionStore
-}
-
-export type CliId = 'claude'
 
 export type SessionStatus = 'creating' | 'active' | 'idle' | 'closed'
 
@@ -37,6 +30,7 @@ export interface ResolvedSession {
 export interface SessionManagerOptions {
   now?: () => Date
   createId?: () => string
+  store?: SessionStore
 }
 
 const ALLOWED_TRANSITIONS: Record<SessionStatus, SessionStatus[]> = {
@@ -66,15 +60,6 @@ export class SessionManager {
     this.store = options.store
   }
 
-  get size(): number {
-    return this.sessions.size
-  }
-
-  get(sessionId: string): Session | undefined {
-    return [...this.sessions.values()].find(
-      (session) => session.id === sessionId,
-    )
-  }
   static async open(
     options: SessionManagerOptions = {},
   ): Promise<SessionManager> {
@@ -89,7 +74,20 @@ export class SessionManager {
     return manager
   }
 
-  async resolve(message: MessageAddress): Promise<ResolvedSession> {
+  get size(): number {
+    return this.sessions.size
+  }
+
+  get(sessionId: string): Session | undefined {
+    return [...this.sessions.values()].find(
+      (session) => session.id === sessionId,
+    )
+  }
+
+  async resolve(
+    message: MessageAddress,
+    cliId: CliId = 'claude',
+  ): Promise<ResolvedSession> {
     const threadId = topicIdOf(message)
     const key = sessionKey(message.chatId, threadId)
     const existing = this.sessions.get(key)
@@ -100,7 +98,7 @@ export class SessionManager {
       id: this.createId(),
       threadId,
       chatId: message.chatId,
-      cliId: 'claude',
+      cliId,
       status: 'creating',
       createdAt: now,
       updatedAt: now,
@@ -156,14 +154,12 @@ export class SessionManager {
     }
     const key = sessionKey(updated.chatId, updated.threadId)
     this.sessions.set(key, updated)
-
     try {
       await this.persist()
     } catch (error) {
       if (this.sessions.get(key) === updated) this.sessions.set(key, current)
       throw error
     }
-
     return updated
   }
 
