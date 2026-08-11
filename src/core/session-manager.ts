@@ -6,6 +6,7 @@ export type SessionStatus = 'creating' | 'active' | 'idle' | 'closed'
 
 export interface Session {
   id: string
+  botId: string
   threadId: string
   chatId: string
   cliId: CliId
@@ -44,8 +45,8 @@ function topicIdOf(message: MessageAddress): string {
   return message.threadId || message.rootId || message.messageId
 }
 
-function sessionKey(chatId: string, threadId: string): string {
-  return `${chatId}:${threadId}`
+function sessionKey(botId: string, chatId: string, threadId: string): string {
+  return `${botId}:${chatId}:${threadId}`
 }
 
 export class SessionManager {
@@ -67,7 +68,7 @@ export class SessionManager {
     const restored = (await options.store?.load()) ?? []
     for (const session of restored) {
       manager.sessions.set(
-        sessionKey(session.chatId, session.threadId),
+        sessionKey(session.botId, session.chatId, session.threadId),
         session,
       )
     }
@@ -87,15 +88,17 @@ export class SessionManager {
   async resolve(
     message: MessageAddress,
     cliId: CliId = 'claude',
+    botId = 'default',
   ): Promise<ResolvedSession> {
     const threadId = topicIdOf(message)
-    const key = sessionKey(message.chatId, threadId)
+    const key = sessionKey(botId, message.chatId, threadId)
     const existing = this.sessions.get(key)
     if (existing) return { session: existing, isNew: false }
 
     const now = this.now().toISOString()
     const session: Session = {
       id: this.createId(),
+      botId,
       threadId,
       chatId: message.chatId,
       cliId,
@@ -128,7 +131,7 @@ export class SessionManager {
       status: nextStatus,
       updatedAt: this.now().toISOString(),
     }
-    const key = sessionKey(updated.chatId, updated.threadId)
+    const key = sessionKey(updated.botId, updated.chatId, updated.threadId)
     this.sessions.set(key, updated)
     try {
       await this.persist()
@@ -152,7 +155,7 @@ export class SessionManager {
       cliSessionId,
       updatedAt: this.now().toISOString(),
     }
-    const key = sessionKey(updated.chatId, updated.threadId)
+    const key = sessionKey(updated.botId, updated.chatId, updated.threadId)
     this.sessions.set(key, updated)
     try {
       await this.persist()
