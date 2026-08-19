@@ -15,6 +15,7 @@ export interface IncomingMessage {
   text: string
   rootId: string
   threadId: string
+  senderType: string
   senderOpenId: string
   mentions: Mention[]
   rawContent: string
@@ -25,6 +26,11 @@ export interface BotOptions {
   appSecret: string
   onMessage: (msg: IncomingMessage, bot: Bot) => Promise<void>
   onCardAction?: (action: CardAction) => Promise<CardActionResponse | undefined>
+}
+
+export interface BotIdentity {
+  openId: string
+  name: string
 }
 
 export interface CardAction {
@@ -49,6 +55,7 @@ export function parseCardAction(data: any): CardAction {
 
 export interface Bot {
   client: Lark.Client
+  getIdentity: () => Promise<BotIdentity>
   reply: (
     messageId: string,
     text: string,
@@ -59,6 +66,12 @@ export interface Bot {
     card: CardJson,
     replyInThread?: boolean,
   ) => Promise<string | undefined>
+  replyMention: (
+    messageId: string,
+    target: BotIdentity,
+    text: string,
+    replyInThread?: boolean,
+  ) => Promise<string | undefined>
   updateCard: (messageId: string, card: CardJson) => Promise<void>
   downloadResource: (
     messageId: string,
@@ -67,6 +80,38 @@ export interface Bot {
     saveDir: string,
     fileName?: string,
   ) => Promise<string>
+}
+
+export function buildMentionPostContent(
+  target: BotIdentity,
+  text: string,
+): Record<string, unknown> {
+  return {
+    zh_cn: {
+      title: '',
+      content: [
+        [
+          {
+            tag: 'at',
+            user_id: target.openId,
+            ...(target.name ? { user_name: target.name } : {}),
+          },
+          { tag: 'text', text: ` ${text}` },
+        ],
+      ],
+    },
+  }
+}
+
+async function fetchBotIdentity(client: Lark.Client): Promise<BotIdentity> {
+  const response = await client.request({
+    url: '/open-apis/bot/v3/info',
+    method: 'GET',
+  })
+  const bot = (response as { bot?: { open_id?: string; app_name?: string } })
+    .bot
+  if (!bot?.open_id) throw new Error('飞书没有返回 bot open_id')
+  return { openId: bot.open_id, name: bot.app_name?.trim() || 'Bot' }
 }
 
 const CONTENT_TYPE_EXTENSIONS: Record<string, string> = {
@@ -140,6 +185,10 @@ export function startBot(opts: BotOptions): Bot {
   const bot: Bot = {
     client,
 
+    getIdentity() {
+      return fetchBotIdentity(client)
+    },
+
     async reply(messageId, text, replyInThread = false) {
       const res = await client.im.v1.message.reply({
         path: { message_id: messageId },
@@ -158,6 +207,18 @@ export function startBot(opts: BotOptions): Bot {
         data: {
           msg_type: 'interactive',
           content: JSON.stringify(card),
+          ...(replyInThread ? { reply_in_thread: true } : {}),
+        },
+      })
+      return res.data?.message_id
+    },
+
+    async replyMention(messageId, target, text, replyInThread = false) {
+      const res = await client.im.v1.message.reply({
+        path: { message_id: messageId },
+        data: {
+          msg_type: 'post',
+          content: JSON.stringify(buildMentionPostContent(target, text)),
           ...(replyInThread ? { reply_in_thread: true } : {}),
         },
       })
@@ -200,6 +261,7 @@ export function startBot(opts: BotOptions): Bot {
         text: extractMessageText(m.message_type, m.content),
         rootId: m.root_id ?? '',
         threadId: m.thread_id ?? '',
+        senderType: data.sender.sender_type ?? '',
         senderOpenId: data.sender.sender_id?.open_id ?? '',
         mentions: parseMentions(m.mentions),
         rawContent: m.content,

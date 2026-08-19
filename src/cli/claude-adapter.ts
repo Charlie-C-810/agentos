@@ -1,4 +1,10 @@
-import type { CliAdapter, CliEvent, CliRunStats } from './types.js'
+import { promptInputForPlatform } from './types.js'
+import type {
+  CliAdapter,
+  CliPromptInput,
+  CliEvent,
+  CliRunStats,
+} from './types.js'
 
 interface ClaudeEvent {
   type?: unknown
@@ -117,8 +123,15 @@ function parseStats(event: ClaudeEvent): CliRunStats | undefined {
     : undefined
 }
 
-function outputArgs(prompt: string): string[] {
-  return ['-p', prompt, '--output-format', 'stream-json', '--verbose']
+function outputArgs(prompt: string, promptInput: CliPromptInput): string[] {
+  return [
+    '--dangerously-skip-permissions',
+    '-p',
+    ...(promptInput === 'argument' ? [prompt] : []),
+    '--output-format',
+    'stream-json',
+    '--verbose',
+  ]
 }
 
 export class ClaudeAdapter implements CliAdapter {
@@ -126,12 +139,33 @@ export class ClaudeAdapter implements CliAdapter {
   readonly command = 'claude'
   readonly displayName = 'Claude Code'
 
-  buildArgs(prompt: string): string[] {
-    return outputArgs(prompt)
+  buildArgs(prompt: string, promptInput: CliPromptInput): string[] {
+    return outputArgs(prompt, promptInput)
   }
 
-  buildResumeArgs(prompt: string, sessionId: string): string[] {
-    return ['--resume', sessionId, ...outputArgs(prompt)]
+  buildResumeArgs(
+    prompt: string,
+    sessionId: string,
+    promptInput: CliPromptInput,
+  ): string[] {
+    return ['--resume', sessionId, ...outputArgs(prompt, promptInput)]
+  }
+
+  buildCompactPlan(sessionId: string, instructions?: string) {
+    const command = instructions?.trim()
+      ? `/compact ${instructions.trim()}`
+      : '/compact'
+    return {
+      protocol: 'claude-stream-json' as const,
+      command: this.command,
+      // 现在 prompt 走 stdin（`-p -`），runClaudeCompact 需要这份文本写入子进程。
+      prompt: command,
+      args: this.buildResumeArgs(
+        command,
+        sessionId,
+        promptInputForPlatform(process.platform),
+      ),
+    }
   }
 
   parseEvent(line: string): CliEvent | undefined {

@@ -1,4 +1,5 @@
-import { spawn } from 'node:child_process'
+import { killCli, spawnCli } from './spawn-cli.js'
+import { promptInputForPlatform } from './types.js'
 import { createInterface } from 'node:readline'
 import type { CliAdapter, CliEvent, CliRunResult } from './types.js'
 
@@ -24,16 +25,28 @@ export function runCli(options: RunCliOptions): Promise<CliRunResult> {
     timeoutMs = DEFAULT_TIMEOUT_MS,
     onEvent,
   } = options
+  // Windows 下 prompt 走 stdin（规避 cmd 转义/乱码），其他平台直接作为命令行参数。
+  const promptInput = promptInputForPlatform(process.platform)
+  const useStdin = promptInput === 'stdin'
   const args = sessionId
-    ? adapter.buildResumeArgs(prompt, sessionId)
-    : adapter.buildArgs(prompt)
+    ? adapter.buildResumeArgs(prompt, sessionId, promptInput)
+    : adapter.buildArgs(prompt, promptInput)
 
   return new Promise((resolve, reject) => {
-    const child = spawn(adapter.command, args, {
+    // 固定用 `['pipe','pipe','pipe']`，让 stdin 始终可写（spawnCli 返回类型按字面量收窄）。
+    const child = spawnCli(adapter.command, args, {
       cwd,
       signal,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ['pipe', 'pipe', 'pipe'],
     })
+    // stdin 模式下把 prompt 写入子进程；否则 prompt 已在命令行参数里，stdin 直接收口。
+    if (child.stdin) {
+      if (useStdin) child.stdin.end(prompt, 'utf8')
+      else child.stdin.end()
+    }
+    // spawn 的 signal 选项只杀直接子进程（cmd 外壳），Windows 下 claude.exe/codex.exe 会变孤儿；
+    // 额外监听 abort 用 killCli 连进程树一起清。
+    signal?.addEventListener('abort', () => killCli(child), { once: true })
     const lines = createInterface({ input: child.stdout })
     let observedSessionId = sessionId
     let observedAnswer: string | undefined
@@ -46,7 +59,7 @@ export function runCli(options: RunCliOptions): Promise<CliRunResult> {
 
     const timer = setTimeout(() => {
       timedOut = true
-      child.kill('SIGTERM')
+      killCli(child)
     }, timeoutMs)
 
     const finish = () => clearTimeout(timer)
