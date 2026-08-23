@@ -138,7 +138,7 @@ export class CodexAdapter implements CliAdapter {
       '--skip-git-repo-check',
       sessionId,
     ]
-    // Windows 上沙箱功能不支持，必须完全禁用。
+    // Windows 上沙箱功能不支持，必须完全禁用；approvals 也一并绕过。
     if (process.platform === 'win32') {
       args.push('--dangerously-bypass-approvals-and-sandbox')
     } else {
