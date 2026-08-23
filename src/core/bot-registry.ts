@@ -116,14 +116,6 @@ export function parseAgentOsConfig(
   return { teamLeaderId: parsed.teamLeader, bots: configs }
 }
 
-export function parseBotConfigs(
-  input: unknown,
-  env: Environment,
-  baseDirectory = process.cwd(),
-): BotConfig[] {
-  return parseAgentOsConfig(input, env, baseDirectory).bots
-}
-
 export async function loadAgentOsConfig(
   filePath: string,
   env: Environment = process.env,
@@ -146,14 +138,6 @@ export async function loadAgentOsConfig(
   } catch (error) {
     throw new Error(`bot 配置文件格式错误: ${(error as Error).message}`)
   }
-}
-
-export async function loadBotConfigs(
-  filePath: string,
-  env: Environment = process.env,
-  baseDirectory = process.cwd(),
-): Promise<BotConfig[]> {
-  return (await loadAgentOsConfig(filePath, env, baseDirectory)).bots
 }
 
 export function buildBotPrompt(
