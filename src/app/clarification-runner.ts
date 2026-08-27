@@ -3,6 +3,7 @@ import {
   answerContinuation,
   answerNeedsContinuation,
   buildClarificationCard,
+  buildProductSpecReadyCard,
   buildTaskCard,
   splitLongText,
   ThrottledCardUpdater,
@@ -13,12 +14,14 @@ import {
   formatClarificationAnswers,
   type ClarificationFlow,
 } from '../core/clarification.js'
+import { findProductSpecRequest } from '../core/product-spec.js'
 import { TaskProgressTracker } from '../core/task-progress.js'
 import { getCliAdapter } from '../cli/registry.js'
 import { executeCli } from './cli-execution.js'
 import { sendResultNotification } from './notification-service.js'
 import { markSessionIdle } from './session-view.js'
 import type { AppRuntime } from './runtime.js'
+import { assertProductSpecDocuments } from './product-spec-documents.js'
 
 export async function continueClarificationFlow(options: {
   runtime: AppRuntime
@@ -117,6 +120,22 @@ export async function continueClarificationFlow(options: {
         replyToMessageId: flow.originalMessageId,
         target: { openId: flow.ownerOpenId, name: '' },
         text: `还需要确认 ${nextRequest.questions.length} 个问题，请在上方卡片中选择。`,
+        replyInThread: flow.replyInThread,
+      })
+      return
+    }
+
+    const productSpecRequest = config.skills.includes('to-spec')
+      ? findProductSpecRequest(result.toolCalls)
+      : undefined
+    if (productSpecRequest) {
+      await assertProductSpecDocuments(session.workspaceDir, productSpecRequest)
+      await cardUpdater.finish(buildProductSpecReadyCard(productSpecRequest))
+      await sendResultNotification({
+        bot,
+        replyToMessageId: flow.originalMessageId,
+        target: { openId: flow.ownerOpenId, name: '' },
+        text: 'Spec 和 Tickets 已经落盘，请查看上方产物卡片。',
         replyInThread: flow.replyInThread,
       })
       return

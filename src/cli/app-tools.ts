@@ -1,15 +1,17 @@
 import { fileURLToPath } from 'node:url'
 
 export const CLARIFICATION_TOOL_NAME = 'request_clarification'
+export const PRODUCT_SPEC_TOOL_NAME = 'request_spec_approval'
 export const CLAUDE_CLARIFICATION_TOOL_NAME = `mcp__agent_os__${CLARIFICATION_TOOL_NAME}`
+export const CLAUDE_PRODUCT_SPEC_TOOL_NAME = `mcp__agent_os__${PRODUCT_SPEC_TOOL_NAME}`
 
 function serverInvocation(): { command: string; args: string[] } {
   const runningFromTypeScript = import.meta.url.endsWith('.ts')
   const server = fileURLToPath(
     new URL(
       runningFromTypeScript
-        ? '../mcp/clarification-server.ts'
-        : '../mcp/clarification-server.js',
+        ? '../mcp/app-tools-server.ts'
+        : '../mcp/app-tools-server.js',
       import.meta.url,
     ),
   )
