@@ -1,10 +1,10 @@
 import { readdir, stat } from 'node:fs/promises'
 import { resolve } from 'node:path'
-import type { ProductSpecRequest } from '../core/product-spec.js'
+import type { LocalProductSpecRequest } from '../core/product-spec.js'
 
 export async function assertProductSpecDocuments(
   workspaceDir: string,
-  request: ProductSpecRequest,
+  request: LocalProductSpecRequest,
 ): Promise<void> {
   const missing: string[] = []
 

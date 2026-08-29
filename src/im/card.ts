@@ -894,6 +894,9 @@ export function buildTeamCard(options: TeamCardOptions): CardJson {
 }
 
 function productDocumentList(flow: ProductSpecFlow): string {
+  if (flow.request.deliveryMode === 'lark-doc') {
+    return `☁️ **飞书云文档** · [打开文档](${flow.request.documentUrl})`
+  }
   return [
     `📘 **Spec** · \`${escapeFeishuMarkdown(flow.request.specPath)}\``,
     `🎫 **Tickets** · \`${escapeFeishuMarkdown(flow.request.ticketsPath)}\``,
@@ -912,7 +915,7 @@ export function buildProductSpecApprovalCard(flow: ProductSpecFlow): CardJson {
     { tag: 'hr' },
     {
       tag: 'markdown',
-      content: `**真实产物**\n${productDocumentList(flow)}`,
+      content: `**共享产物**\n${productDocumentList(flow)}`,
     },
   ]
 
@@ -949,7 +952,10 @@ export function buildProductSpecApprovalCard(flow: ProductSpecFlow): CardJson {
       title: { tag: 'plain_text', content: '产品文档已生成' },
       subtitle: {
         tag: 'plain_text',
-        content: 'Spec · Tickets 待确认',
+        content:
+          flow.request.deliveryMode === 'lark-doc'
+            ? '飞书云文档待确认'
+            : '本地 Spec · Tickets 待确认',
       },
     },
     body: {
