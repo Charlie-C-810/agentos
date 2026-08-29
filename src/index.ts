@@ -3,8 +3,7 @@
  * 当前阶段：飞书消息驱动 Claude Code / Codex 完成任务。
  */
 import 'dotenv/config'
-import { randomUUID } from 'node:crypto'
-import { basename, join, resolve } from 'node:path'
+import { join, resolve } from 'node:path'
 import { startBot, type Bot, type IncomingDocumentComment } from './im/lark.js'
 import {
   answerContinuation,
@@ -12,7 +11,6 @@ import {
   buildClarificationCard,
   buildProductSpecApprovalCard,
   buildClarificationSupersededCard,
-  buildCollaborationCard,
   buildSessionNoticeCard,
   buildTaskCard,
   splitLongText,
@@ -34,7 +32,10 @@ import { JsonProductSpecFlowStore } from './core/product-spec-store.js'
 import { topicTaskId } from './core/topic-task.js'
 import {
   CollaborationInbox,
+  buildCollaborationPrompt,
+  collaborationOrigin,
   collaborationTurnKey,
+  findDispatchTaskRequest,
   type CollaborationMessage,
 } from './core/collaboration.js'
 import {
@@ -57,6 +58,7 @@ import { sendResultNotification } from './app/notification-service.js'
 import { markSessionIdle } from './app/session-view.js'
 import { runProductDocumentComment } from './app/product-comment-runner.js'
 import { ensureProductSpecSubmission } from './app/product-spec-submission.js'
+import { CollaborationService } from './app/collaboration-service.js'
 import type { AppRuntime, BotRuntime } from './app/runtime.js'
 
 const botConfigPath = resolve(
@@ -106,6 +108,7 @@ const runtime: AppRuntime = {
   clarificationFlows,
   productSpecFlows,
 }
+const collaborationService = new CollaborationService(runtime)
 
 console.log('Agent OS 启动，正在建立飞书长连接…')
 console.log(
@@ -120,71 +123,17 @@ for (const config of botConfigs) {
   )
 }
 
-async function sendCollaborationMessage(options: {
-  senderConfig: BotConfig
-  senderBot: Bot
-  replyToMessageId: string
-  targetBotId: string
-  taskId: string
-  round: number
-  maxRounds: number
-  workspaceDir: string
-  prompt: string
-}): Promise<void> {
-  const target = botRuntimes.get(options.targetBotId)
-  if (!target) throw new Error(`协作 bot 尚未就绪: ${options.targetBotId}`)
-  const collaboration: CollaborationMessage = {
-    dispatchId: randomUUID().replaceAll('-', '').slice(0, 12),
-    taskId: options.taskId,
-    fromBotId: options.senderConfig.id,
-    toBotId: options.targetBotId,
-    round: options.round,
-    maxRounds: options.maxRounds,
-    workspaceDir: options.workspaceDir,
-    prompt: options.prompt,
-  }
-  collaborationInbox.register(collaboration)
-  try {
-    const cardMessageId = await options.senderBot.replyCard(
-      options.replyToMessageId,
-      buildCollaborationCard({
-        senderName:
-          botRuntimes.get(options.senderConfig.id)?.identity.name ??
-          options.senderConfig.id,
-        targetName: target.identity.name,
-        workspaceName: basename(options.workspaceDir),
-        prompt: options.prompt,
-        round: options.round,
-        maxRounds: options.maxRounds,
-      }),
-      true,
-    )
-    if (!cardMessageId) throw new Error('飞书没有返回协作卡片 message_id')
-    const mentionMessageId = await options.senderBot.replyMention(
-      cardMessageId,
-      target.identity,
-      options.round === 1
-        ? `新的代码审查任务（任务编号：${collaboration.dispatchId}），请查看上方卡片。`
-        : `审查反馈已经返回（任务编号：${collaboration.dispatchId}），请查看上方卡片。`,
-      true,
-    )
-    if (!mentionMessageId) throw new Error('飞书没有返回协作通知 message_id')
-  } catch (error) {
-    collaborationInbox.consume(collaboration.dispatchId, collaboration.toBotId)
-    throw error
-  }
-  console.log(
-    `[协作] task=${options.taskId} ${options.senderConfig.id} -> ${options.targetBotId} round=${options.round}/${options.maxRounds}`,
-  )
-}
-
-async function startConfiguredBot(config: BotConfig): Promise<void> {
+async function startConfiguredBot(
+  config: BotConfig,
+  collaborationService: CollaborationService,
+): Promise<void> {
   const startedBot = startBot({
     appId: config.appId,
     appSecret: config.appSecret,
     onCardAction: createCardActionHandler({
       runtime,
       config,
+      collaborationService,
       defaultProductDeliveryMode: agentOsConfig.defaultProductDeliveryMode,
     }),
     onDocumentComment: config.skills.includes('lark-drive')
@@ -259,7 +208,9 @@ async function startConfiguredBot(config: BotConfig): Promise<void> {
             pendingClarification,
             cliRequest?.prompt ?? resolved,
           )
-        : (collaboration?.prompt ?? cliRequest?.prompt ?? resolved)
+        : collaboration
+          ? buildCollaborationPrompt(collaboration)
+          : (cliRequest?.prompt ?? resolved)
       const prompt = buildBotPrompt(
         config,
         taskText,
@@ -350,7 +301,7 @@ async function startConfiguredBot(config: BotConfig): Promise<void> {
       const run = new AbortController()
       const activeRun: ActiveRun = {
         controller: run,
-        ownerOpenId: msg.senderOpenId,
+        ownerOpenId: collaboration?.ownerOpenId ?? msg.senderOpenId,
       }
       activeRuns.set(session.id, activeRun)
 
@@ -479,8 +430,11 @@ async function startConfiguredBot(config: BotConfig): Promise<void> {
               taskId,
               botId: config.id,
               sessionId: session.id,
-              ownerOpenId: msg.senderOpenId,
-              ownerUnionId: msg.senderUnionId,
+              ownerOpenId: collaboration?.ownerOpenId ?? msg.senderOpenId,
+              ownerUnionId: collaboration?.ownerUnionId ?? msg.senderUnionId,
+              collaboration: collaboration
+                ? collaborationOrigin(collaboration)
+                : undefined,
               originalMessageId: msg.messageId,
               cardMessageId: cardId,
               replyInThread: hasThread,
@@ -544,6 +498,36 @@ async function startConfiguredBot(config: BotConfig): Promise<void> {
               )
             }
           }
+          const dispatchRequest = !isCompacting
+            ? findDispatchTaskRequest(finalResult.toolCalls)
+            : undefined
+          if (dispatchRequest) {
+            if (config.id !== agentOsConfig.teamLeaderId) {
+              throw new Error(
+                '只有 CEO 助理可以调用 dispatch_task 派发团队任务',
+              )
+            }
+            const dispatchTarget = teamRegistry.get(dispatchRequest.targetBotId)
+            if (!dispatchTarget) {
+              throw new Error(
+                `团队成员未注册或未启用: ${dispatchRequest.targetBotId}`,
+              )
+            }
+            if (dispatchRequest.targetBotId === config.id) {
+              throw new Error(`不能把团队任务派发给当前 bot: ${config.id}`)
+            }
+            if (
+              collaboration &&
+              collaboration.round >= collaboration.maxRounds
+            ) {
+              throw new Error(
+                `协作任务已达到轮次上限 ${collaboration.maxRounds}，不能继续派发`,
+              )
+            }
+          }
+          if (productSpecRequest && dispatchRequest) {
+            throw new Error('不能同时提交产品方案和派发团队任务')
+          }
           if (productSpecRequest) {
             if (productSpecRequest.deliveryMode === 'local') {
               await assertProductSpecDocuments(
@@ -559,15 +543,21 @@ async function startConfiguredBot(config: BotConfig): Promise<void> {
               taskId,
               botId: config.id,
               sessionId: session.id,
-              ownerOpenId: msg.senderOpenId,
-              ownerUnionId: msg.senderUnionId,
+              ownerOpenId: collaboration?.ownerOpenId ?? msg.senderOpenId,
+              ownerUnionId: collaboration?.ownerUnionId ?? msg.senderUnionId,
+              collaboration: collaboration
+                ? collaborationOrigin(collaboration)
+                : undefined,
               request: productSpecRequest,
             })
             await cardUpdater.finish(buildProductSpecApprovalCard(flow))
             await sendResultNotification({
               bot,
               replyToMessageId: msg.messageId,
-              target: { openId: msg.senderOpenId, name: '' },
+              target: {
+                openId: collaboration?.ownerOpenId ?? msg.senderOpenId,
+                name: '',
+              },
               text: '产品方案已生成，请查看上方确认卡。',
               replyInThread: hasThread,
             })
@@ -617,48 +607,79 @@ async function startConfiguredBot(config: BotConfig): Promise<void> {
               replyInThread: hasThread,
             })
           }
-          // 产品澄清在本节停在产品结论，不自动进入后续团队编排。
-          if (!isCompacting && !config.skills.includes('grill-me')) {
+          if (!isCompacting) {
             try {
-              if (
-                collaboration &&
-                collaboration.round < collaboration.maxRounds
-              ) {
-                await sendCollaborationMessage({
+              if (dispatchRequest) {
+                await collaborationService.dispatch({
                   senderConfig: config,
                   senderBot: bot,
                   replyToMessageId: msg.messageId,
-                  targetBotId: collaboration.fromBotId,
-                  taskId: collaboration.taskId,
-                  round: collaboration.round + 1,
-                  maxRounds: collaboration.maxRounds,
+                  targetBotId: dispatchRequest.targetBotId,
+                  taskId,
+                  ownerOpenId: collaboration?.ownerOpenId ?? msg.senderOpenId,
+                  ownerUnionId:
+                    collaboration?.ownerUnionId ?? msg.senderUnionId,
+                  reportToBotId: collaboration?.reportToBotId ?? config.id,
+                  objective: dispatchRequest.objective,
+                  instruction: dispatchRequest.instruction,
+                  expectedOutput: dispatchRequest.expectedOutput,
+                  round: collaboration ? collaboration.round + 1 : 1,
+                  maxRounds:
+                    collaboration?.maxRounds ?? config.collaborationMaxRounds,
                   workspaceDir: session.workspaceDir,
-                  prompt: result.answer || '任务已完成，请检查当前工作目录。',
                 })
-              } else if (!collaboration && config.reviewBy) {
-                await sendCollaborationMessage({
-                  senderConfig: config,
-                  senderBot: bot,
-                  replyToMessageId: msg.messageId,
-                  targetBotId: config.reviewBy,
-                  taskId: randomUUID(),
-                  round: 1,
-                  maxRounds: config.collaborationMaxRounds,
-                  workspaceDir: session.workspaceDir,
-                  prompt: [
-                    '请独立检查当前工作目录中刚完成的实现。',
-                    `原始任务：${taskText}`,
-                    '请直接读取代码和改动，指出明确问题；没有问题时说明检查通过。',
-                  ].join('\n\n'),
-                })
-              } else if (collaboration && senderRuntime) {
-                await sendResultNotification({
-                  bot,
-                  replyToMessageId: msg.messageId,
-                  target: senderRuntime.identity,
-                  text: '本轮协作已完成，请查看上方结果。',
-                  replyInThread: hasThread,
-                })
+                if (!collaboration) {
+                  const targetName =
+                    botRuntimes.get(dispatchRequest.targetBotId)?.identity
+                      .name ?? dispatchRequest.targetBotId
+                  await sendResultNotification({
+                    bot,
+                    replyToMessageId: msg.messageId,
+                    target: { openId: msg.senderOpenId, name: '' },
+                    text: `任务已交给 ${targetName}，请查看上方协作消息。`,
+                    replyInThread: hasThread,
+                  })
+                }
+              } else if (collaboration) {
+                if (collaboration.reportToBotId === config.id) {
+                  await sendResultNotification({
+                    bot,
+                    replyToMessageId: msg.messageId,
+                    target: { openId: collaboration.ownerOpenId, name: '' },
+                    text: `协作任务“${collaboration.objective}”已经完成，请查看上方结果。`,
+                    replyInThread: hasThread,
+                  })
+                } else if (collaboration.round >= collaboration.maxRounds) {
+                  await sendResultNotification({
+                    bot,
+                    replyToMessageId: msg.messageId,
+                    target: { openId: collaboration.ownerOpenId, name: '' },
+                    text: `协作任务“${collaboration.objective}”已达到 ${collaboration.maxRounds} 轮上限，请查看上方结果并决定下一步。`,
+                    replyInThread: hasThread,
+                  })
+                } else {
+                  await collaborationService.dispatch({
+                    senderConfig: config,
+                    senderBot: bot,
+                    replyToMessageId: msg.messageId,
+                    targetBotId: collaboration.reportToBotId,
+                    taskId: collaboration.taskId,
+                    ownerOpenId: collaboration.ownerOpenId,
+                    ownerUnionId: collaboration.ownerUnionId,
+                    reportToBotId: collaboration.reportToBotId,
+                    objective: collaboration.objective,
+                    instruction: [
+                      `${botRuntimes.get(config.id)?.identity.name ?? config.id} 已完成当前协作任务，下面是它的结果：`,
+                      finalResult.answer,
+                      '请基于这份结果继续组织后续工作：仍需其他成员参与时使用 dispatch_task 继续派发；已经可以交付时，直接向用户汇总结论。',
+                    ].join('\n\n'),
+                    expectedOutput:
+                      '继续推进原任务，或在已经完成时向用户给出最终结论。',
+                    round: collaboration.round + 1,
+                    maxRounds: collaboration.maxRounds,
+                    workspaceDir: session.workspaceDir,
+                  })
+                }
               }
             } catch (error) {
               const message = (error as Error).message
@@ -839,4 +860,6 @@ function rememberDocumentCommentEvent(eventKey: string): void {
   if (oldest) processedDocumentCommentEvents.delete(oldest)
 }
 
-await Promise.all(botConfigs.map(startConfiguredBot))
+await Promise.all(
+  botConfigs.map((config) => startConfiguredBot(config, collaborationService)),
+)

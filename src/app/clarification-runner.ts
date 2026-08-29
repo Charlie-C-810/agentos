@@ -110,6 +110,7 @@ export async function continueClarificationFlow(options: {
         sessionId: session.id,
         ownerOpenId: flow.ownerOpenId,
         ownerUnionId: flow.ownerUnionId,
+        collaboration: flow.collaboration,
         originalMessageId: flow.originalMessageId,
         cardMessageId: progressCardMessageId,
         replyInThread: flow.replyInThread,
@@ -176,6 +177,7 @@ export async function continueClarificationFlow(options: {
         sessionId: session.id,
         ownerOpenId: flow.ownerOpenId,
         ownerUnionId: flow.ownerUnionId,
+        collaboration: flow.collaboration,
         request: productSpecRequest,
       })
       await cardUpdater.finish(buildProductSpecApprovalCard(productSpecFlow))
