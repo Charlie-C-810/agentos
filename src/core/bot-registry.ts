@@ -181,7 +181,9 @@ export function buildBotPrompt(
         '产品方案交付规则（必须遵守）：',
         `- 当前默认交付方式：${defaultProductDeliveryMode}。`,
         '- 用户明确指定本地 Markdown 或飞书云文档时，以用户本次选择覆盖默认值。',
-        '- 不要为了选择交付格式单独发起澄清。提交方案时必须写入最终采用的 deliveryMode。',
+        '- 不要为了选择交付格式单独发起澄清。',
+        '- 方案产物完成后必须实际调用 request_spec_approval，并提交最终采用的 deliveryMode 与对应产物字段。',
+        '- 不能只在普通回复中罗列 deliveryMode、documentUrl、specPath 或 ticketsPath。工具调用成功后停止本轮。',
       ].join('\n')
     : ''
   const feishuOutputPolicy = [

@@ -14,7 +14,6 @@ import {
   formatClarificationAnswers,
   type ClarificationFlow,
 } from '../core/clarification.js'
-import { findProductSpecRequest } from '../core/product-spec.js'
 import { TaskProgressTracker } from '../core/task-progress.js'
 import { getCliAdapter } from '../cli/registry.js'
 import { executeCli } from './cli-execution.js'
@@ -22,6 +21,7 @@ import { sendResultNotification } from './notification-service.js'
 import { markSessionIdle } from './session-view.js'
 import type { AppRuntime } from './runtime.js'
 import { assertProductSpecDocuments } from './product-spec-documents.js'
+import { ensureProductSpecSubmission } from './product-spec-submission.js'
 
 export async function continueClarificationFlow(options: {
   runtime: AppRuntime
@@ -29,8 +29,9 @@ export async function continueClarificationFlow(options: {
   config: BotConfig
   flow: ClarificationFlow
   run: AbortController
+  defaultDeliveryMode: 'local' | 'lark-doc'
 }): Promise<void> {
-  const { bot, config, flow, run, runtime } = options
+  const { bot, config, flow, run, runtime, defaultDeliveryMode } = options
   const session = runtime.sessions.get(flow.sessionId)
   if (!session) throw new Error('需求澄清对应的会话已经失效')
 
@@ -125,11 +126,44 @@ export async function continueClarificationFlow(options: {
       return
     }
 
-    const productSpecRequest =
+    const managesProductSpec =
       config.skills.includes('to-spec') || config.skills.includes('lark-doc')
-        ? findProductSpecRequest(result.toolCalls)
-        : undefined
-    if (productSpecRequest) {
+    if (managesProductSpec) {
+      const submission = await ensureProductSpecSubmission({
+        result,
+        defaultDeliveryMode,
+        retry: (retryPrompt, resultSessionId) =>
+          executeCli(
+            adapter,
+            retryPrompt,
+            session.workspaceDir,
+            resultSessionId ?? session.cliSessionId,
+            run.signal,
+            (event) => {
+              if (
+                event.type !== 'tool_start' &&
+                event.type !== 'tool_end' &&
+                event.type !== 'context'
+              )
+                return
+              progress.accept(event)
+              renderProgress()
+            },
+          ),
+      })
+      const { request: productSpecRequest } = submission
+      if (submission.result.sessionId) {
+        await runtime.sessions.setCliSessionId(
+          session.id,
+          submission.result.sessionId,
+        )
+      }
+      if (submission.result.stats?.contextWindowTokens) {
+        runtime.contextWindows.set(
+          session.id,
+          submission.result.stats.contextWindowTokens,
+        )
+      }
       if (productSpecRequest.deliveryMode === 'local') {
         await assertProductSpecDocuments(
           session.workspaceDir,
@@ -139,6 +173,7 @@ export async function continueClarificationFlow(options: {
       const productSpecFlow = runtime.productSpecFlows.create({
         taskId: flow.taskId,
         botId: config.id,
+        sessionId: session.id,
         ownerOpenId: flow.ownerOpenId,
         ownerUnionId: flow.ownerUnionId,
         request: productSpecRequest,
