@@ -3,7 +3,16 @@ import { promptInputForPlatform } from './types.js'
 import { createInterface } from 'node:readline'
 import type { CliAdapter, CliEvent, CliRunResult } from './types.js'
 
-const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000
+const DEFAULT_TIMEOUT_MS = 2 * 60 * 60 * 1000
+
+function envTimeoutMs(adapter: CliAdapter): number | undefined {
+  const raw =
+    process.env[`${adapter.id.toUpperCase()}_TIMEOUT_MS`] ??
+    process.env.CLI_TIMEOUT_MS
+  if (!raw) return undefined
+  const parsed = Number(raw)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined
+}
 
 export interface RunCliOptions {
   adapter: CliAdapter
@@ -12,6 +21,7 @@ export interface RunCliOptions {
   sessionId?: string
   signal?: AbortSignal
   timeoutMs?: number
+  env?: Record<string, string>
   onEvent?: (event: CliEvent) => void
 }
 
@@ -22,7 +32,8 @@ export function runCli(options: RunCliOptions): Promise<CliRunResult> {
     cwd,
     sessionId,
     signal,
-    timeoutMs = DEFAULT_TIMEOUT_MS,
+    timeoutMs = envTimeoutMs(adapter) ?? DEFAULT_TIMEOUT_MS,
+    env,
     onEvent,
   } = options
   // Windows 下 prompt 走 stdin（规避 cmd 转义/乱码），其他平台直接作为命令行参数。
@@ -37,6 +48,7 @@ export function runCli(options: RunCliOptions): Promise<CliRunResult> {
     const child = spawnCli(adapter.command, args, {
       cwd,
       signal,
+      env: env ? { ...process.env, ...env } : undefined,
       stdio: ['pipe', 'pipe', 'pipe'],
     })
     // stdin 模式下把 prompt 写入子进程；否则 prompt 已在命令行参数里，stdin 直接收口。
